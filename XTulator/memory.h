@@ -3,8 +3,10 @@
 
 #include <stdint.h>
 
-#define MEMORY_RANGE		0x100000
-#define MEMORY_MASK			0x0FFFFF
+#define MEMORY_RANGE		0x1000000
+#define MEMORY_MASK			0x0FFFFFF
+
+extern uint8_t* main_ram;
 
 void memory_mapRegister(uint32_t start, uint32_t len, uint8_t* readb, uint8_t* writeb);
 void memory_mapCallbackRegister(uint32_t start, uint32_t count, uint8_t(*readb)(void*, uint32_t), void (*writeb)(void*, uint32_t, uint8_t), void* udata);

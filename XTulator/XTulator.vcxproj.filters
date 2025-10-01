@@ -153,12 +153,18 @@
     <ClCompile Include="menus.c">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="cmos.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="chipset\i8042.c">
+      <Filter>Source Files\chipset</Filter>
+    </ClCompile>
+    <ClCompile Include="cpu\fpu.c">
+      <Filter>Source Files\cpu</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="cpu\cpu.h">
-      <Filter>Header Files\cpu</Filter>
-    </ClInclude>
-    <ClInclude Include="cpu\cpuconf.h">
       <Filter>Header Files\cpu</Filter>
     </ClInclude>
     <ClInclude Include="chipset\i8259.h">
@@ -256,6 +262,15 @@
     </ClInclude>
     <ClInclude Include="menus.h">
       <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="cmos.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="chipset\i8042.h">
+      <Filter>Header Files\chipset</Filter>
+    </ClInclude>
+    <ClInclude Include="cpu\fpu.h">
+      <Filter>Header Files\cpu</Filter>
     </ClInclude>
   </ItemGroup>
 </Project>

@@ -20,8 +20,8 @@
 #include "../../config.h"
 
 #ifdef _WIN32
-#include <SDL/SDL.h>
-#include <SDL/SDL_syswm.h>
+#include <SDL.h>
+#include <SDL_syswm.h>
 #include <Windows.h>
 #else
 #include <SDL.h>

@@ -48,7 +48,7 @@ void port_write(CPU_t* cpu, uint16_t portnum, uint8_t value) {
 #endif
 	portnum &= 0x0FFF;
 	if (portnum == 0x80) {
-		debug_log(DEBUG_DETAIL, "Diagnostic port out: %02X\r\n", value);
+		debug_log(DEBUG_INFO, "[POST CARD] Port 80h Out: %02X\n", value);
 	}
 	if (ports_cbWriteB[portnum] != NULL) {
 		(*ports_cbWriteB[portnum])(ports_udata[portnum], portnum, value);

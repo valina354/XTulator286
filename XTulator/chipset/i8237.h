@@ -24,6 +24,7 @@ typedef struct I8237_s {
 	uint8_t tempreg;
 	uint8_t memtomem;
 	CPU_t* cpu;
+	uint8_t is_slave;
 } I8237_t;
 
 #define DMA_MODE_DEMAND		0
@@ -39,6 +40,6 @@ void i8237_writeport(I8237_t* i8237, uint16_t addr, uint8_t value);
 uint8_t i8237_readport(I8237_t* i8237, uint16_t addr);
 uint8_t i8237_read(I8237_t* i8237, uint8_t ch);
 void i8237_write(I8237_t* i8237, uint8_t ch, uint8_t value);
-void i8237_init(I8237_t* i8237, CPU_t* cpu);
+void i8237_init(I8237_t* i8237, CPU_t* cpu, uint16_t base_port, uint16_t page_port, uint8_t is_slave);
 
 #endif

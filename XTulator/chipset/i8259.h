@@ -22,23 +22,26 @@
 
 #include <stdint.h>
 
-typedef struct {
-	uint8_t imr; //mask register
-	uint8_t irr; //request register
-	uint8_t isr; //service register
-	uint8_t icwstep; //used during initialization to keep track of which ICW we're at
+typedef struct I8259_s {
+	uint8_t imr;
+	uint8_t irr;
+	uint8_t isr;
+	uint8_t icwstep;
 	uint8_t icw[5];
 	uint8_t ocw[5];
-	uint8_t intoffset; //interrupt vector offset
-	uint8_t priority; //which IRQ has highest priority
-	uint8_t autoeoi; //automatic EOI mode
-	uint8_t readmode; //remember what to return on read register from OCW3
+	uint8_t intoffset;
+	uint8_t priority;
+	uint8_t autoeoi;
+	uint8_t readmode;
 	uint8_t vector;
 	uint8_t lastintr;
 	uint8_t enabled;
+	uint8_t is_slave;
+	struct I8259_s* partner;
 } I8259_t;
 
-void i8259_init(I8259_t* i8259);
+void i8259_init(I8259_t* i8259, uint8_t is_slave, I8259_t* partner);
+
 void i8259_doirq(I8259_t* i8259, uint8_t irqnum);
 uint8_t i8259_nextintr(I8259_t* i8259);
 void i8259_write(I8259_t* i8259, uint16_t portnum, uint8_t value);

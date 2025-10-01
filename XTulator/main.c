@@ -84,8 +84,8 @@ int main(int argc, char *argv[]) {
 
 	sprintf(title, "%s v%s pre alpha", STR_TITLE, STR_VERSION);
 
-	printf("%s (c)2020 Mike Chambers\r\n", title);
-	printf("[A portable, open source 80186 PC emulator]\r\n\r\n");
+	printf("%s (c)2025 Jdjd Gaming, forked from XTulator by Mike Chambers\r\n", title);
+	printf("[A portable, open source 80286 PC emulator]\r\n\r\n");
 
 	ports_init();
 	timing_init();
@@ -129,11 +129,12 @@ int main(int argc, char *argv[]) {
 	}
 	while (running) {
 		static uint32_t curloop = 0;
+		cpu_interruptCheck(&machine.CPU, &machine.i8259);
+
 		if (limitCPU == 0) {
 			goCPU = 1;
 		}
 		if (goCPU) {
-			cpu_interruptCheck(&machine.CPU, &machine.i8259);
 			cpu_exec(&machine.CPU, instructionsperloop);
 			ops += instructionsperloop;
 			goCPU = 0;
@@ -145,7 +146,7 @@ int main(int argc, char *argv[]) {
 			case SDLCONSOLE_EVENT_KEY:
 				machine.KeyState.scancode = sdlconsole_getScancode();
 				machine.KeyState.isNew = 1;
-				i8259_doirq(&machine.i8259, 1);
+				i8042_send_scancode(&machine.i8042, machine.KeyState.scancode);
 				break;
 			case SDLCONSOLE_EVENT_QUIT:
 				running = 0;

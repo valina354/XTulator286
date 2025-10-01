@@ -48,6 +48,7 @@ void i8237_writeport(I8237_t* i8237, uint16_t addr, uint8_t value) {
 	switch (addr) {
 	case 0: case 1: case 2: case 3: case 4: case 5: case 6: case 7:
 		ch = (addr >> 1) & 3;
+		uint8_t is_16bit_channel = i8237->is_slave && ch > 0;
 		if (addr & 0x01) { //write terminal count
 			if (i8237->flipflop) {
 				i8237->chan[ch].count = (i8237->chan[ch].count & 0x00FF) | ((uint16_t)value << 8);
@@ -55,14 +56,20 @@ void i8237_writeport(I8237_t* i8237, uint16_t addr, uint8_t value) {
 			else {
 				i8237->chan[ch].count = (i8237->chan[ch].count & 0xFF00) | (uint16_t)value;
 			}
+			if (is_16bit_channel) {
+				i8237->chan[ch].count = (i8237->chan[ch].count + 1) * 2 - 1;
+			}
 			i8237->chan[ch].reloadcount = i8237->chan[ch].count;
 		}
-		else {
+		else { // write address
 			if (i8237->flipflop) {
 				i8237->chan[ch].addr = (i8237->chan[ch].addr & 0x00FF) | ((uint16_t)value << 8);
 			}
 			else {
 				i8237->chan[ch].addr = (i8237->chan[ch].addr & 0xFF00) | (uint16_t)value;
+			}
+			if (is_16bit_channel) {
+				i8237->chan[ch].addr <<= 1;
 			}
 			i8237->chan[ch].reloadaddr = i8237->chan[ch].addr;
 #ifdef DEBUG_DMA
@@ -139,26 +146,43 @@ uint8_t i8237_readport(I8237_t* i8237, uint16_t addr) {
 	switch (addr) {
 	case 0: case 1: case 2: case 3: case 4: case 5: case 6: case 7:
 		ch = (addr >> 1) & 3;
+		uint8_t is_16bit_channel = i8237->is_slave && ch > 0;
+		uint16_t temp_addr = i8237->chan[ch].addr;
+		uint16_t temp_count = i8237->chan[ch].count;
+
+		if (is_16bit_channel) {
+			temp_addr >>= 1;
+			temp_count = ((temp_count + 1) / 2) - 1;
+		}
 		if (addr & 1) { //count
 			if (i8237->flipflop) {
-				ret = (uint8_t)(i8237->chan[ch].count >> 8); //TODO: or give back the reload??
+				ret = (uint8_t)(temp_count >> 8);
 			}
 			else {
-				ret = (uint8_t)i8237->chan[ch].count; //TODO: or give back the reload??
+				ret = (uint8_t)temp_count;
 			}
-		} else { //address
-			//printf("%04X\r\n", i8237->chan[ch].addr);
+		}
+		else { //address
 			if (i8237->flipflop) {
-				ret = (uint8_t)(i8237->chan[ch].addr >> 8);
+				ret = (uint8_t)(temp_addr >> 8);
 			}
 			else {
-				ret = (uint8_t)i8237->chan[ch].addr;
+				ret = (uint8_t)temp_addr;
 			}
 		}
 		i8237->flipflop ^= 1;
 		break;
 	case 0x08: //status register
-		ret = 0x0F;
+		ret = 0;
+		if (i8237->chan[0].terminal) ret |= 0x01;
+		if (i8237->chan[1].terminal) ret |= 0x02;
+		if (i8237->chan[2].terminal) ret |= 0x04;
+		if (i8237->chan[3].terminal) ret |= 0x08;
+		i8237->chan[0].terminal = 0;
+		i8237->chan[1].terminal = 0;
+		i8237->chan[2].terminal = 0;
+		i8237->chan[3].terminal = 0;
+		break;
 	}
 	return ret;
 }
@@ -191,29 +215,9 @@ uint8_t i8237_readpage(I8237_t* i8237, uint16_t addr) {
 uint8_t i8237_read(I8237_t* i8237, uint8_t ch) {
 	uint8_t ret = 0xFF;
 
-	//TODO: fix commented out stuff
-	//if (i8237->chan[ch].enable && !i8237->chan[ch].terminal) {
-		ret = cpu_read(i8237->cpu, i8237->chan[ch].page + i8237->chan[ch].addr);
-		i8237->chan[ch].addr += i8237->chan[ch].addrinc;
-		i8237->chan[ch].count--;
-		if (i8237->chan[ch].count == 0xFFFF) {
-			if (i8237->chan[ch].autoinit) {
-				i8237->chan[ch].count = i8237->chan[ch].reloadcount;
-				i8237->chan[ch].addr = i8237->chan[ch].reloadaddr;
-			} else {
-				i8237->chan[ch].terminal = 1; //TODO: does this also happen in autoinit mode?
-			}
-		}
-	//}
+	if (i8237->chan[ch].masked || i8237->chan[ch].terminal) return 0xFF;
 
-	return ret;
-}
-
-void i8237_write(I8237_t* i8237, uint8_t ch, uint8_t value) {
-	//TODO: fix commented out stuff
-	//if (i8237->chan[ch].enable && !i8237->chan[ch].terminal) {
-	cpu_write(i8237->cpu, i8237->chan[ch].page + i8237->chan[ch].addr, value);
-	printf("Write to %05X\r\n", i8237->chan[ch].page + i8237->chan[ch].addr);
+	ret = cpu_read(i8237->cpu, i8237->chan[ch].page + i8237->chan[ch].addr);
 	i8237->chan[ch].addr += i8237->chan[ch].addrinc;
 	i8237->chan[ch].count--;
 	if (i8237->chan[ch].count == 0xFFFF) {
@@ -222,14 +226,34 @@ void i8237_write(I8237_t* i8237, uint8_t ch, uint8_t value) {
 			i8237->chan[ch].addr = i8237->chan[ch].reloadaddr;
 		}
 		else {
-			i8237->chan[ch].terminal = 1; //TODO: does this also happen in autoinit mode?
+			i8237->chan[ch].terminal = 1;
+		}
+	}
+
+	return ret;
+}
+
+void i8237_write(I8237_t* i8237, uint8_t ch, uint8_t value) {
+	if (i8237->chan[ch].masked || i8237->chan[ch].terminal) return;
+
+	cpu_write(i8237->cpu, i8237->chan[ch].page + i8237->chan[ch].addr, value);
+	i8237->chan[ch].addr += i8237->chan[ch].addrinc;
+	i8237->chan[ch].count--;
+	if (i8237->chan[ch].count == 0xFFFF) {
+		if (i8237->chan[ch].autoinit) {
+			i8237->chan[ch].count = i8237->chan[ch].reloadcount;
+			i8237->chan[ch].addr = i8237->chan[ch].reloadaddr;
+		}
+		else {
+			i8237->chan[ch].terminal = 1;
 		}
 	}
 }
 
-void i8237_init(I8237_t* i8237, CPU_t* cpu) {
+void i8237_init(I8237_t* i8237, CPU_t* cpu, uint16_t base_port, uint16_t page_port, uint8_t is_slave) {
 	i8237_reset(i8237);
-
-	ports_cbRegister(0x00, 16, (void*)i8237_readport, NULL, (void*)i8237_writeport, NULL, i8237);
-	ports_cbRegister(0x80, 16, (void*)i8237_readpage, NULL, (void*)i8237_writepage, NULL, i8237);
+	i8237->cpu = cpu;
+	i8237->is_slave = is_slave;
+	ports_cbRegister(base_port, 16, (void*)i8237_readport, NULL, (void*)i8237_writeport, NULL, i8237);
+	ports_cbRegister(page_port, 16, (void*)i8237_readpage, NULL, (void*)i8237_writepage, NULL, i8237);
 }

@@ -21,7 +21,8 @@
 #define _CPU_H_
 
 #include <stdint.h>
-#include "cpuconf.h"
+#include <stdbool.h>
+#include "fpu.h"
 #include "../chipset/i8259.h"
 
 union _bytewordregs_ {
@@ -30,9 +31,28 @@ union _bytewordregs_ {
 };
 
 typedef struct {
+	uint32_t base;
+	uint16_t limit;
+	uint8_t access;
+	uint8_t valid;
+	uint16_t ss0;
+	uint16_t sp0;
+} DESCRIPTOR_CACHE;
+
+typedef struct {
 	union _bytewordregs_ regs;
 	uint8_t	opcode, segoverride, reptype, hltstate;
 	uint16_t segregs[4], savecs, saveip, ip, useseg, oldsp;
+	uint16_t msw;
+	struct {
+		uint16_t limit;
+		uint32_t base;
+	} gdtr, idtr;
+	uint16_t ldtr, tr;
+	uint8_t protected_mode;
+	DESCRIPTOR_CACHE segcache[4];
+	DESCRIPTOR_CACHE ldtr_cache;
+	DESCRIPTOR_CACHE tr_cache;
 	uint8_t	tempcf, oldcf, cf, pf, af, zf, sf, tf, ifl, df, of, mode, reg, rm;
 	uint16_t oper1, oper2, res16, disp16, temp16, dummy, stacksize, frametemp;
 	uint8_t	oper1b, oper2b, res8, disp8, temp8, nestlev, addrbyte;
@@ -40,7 +60,9 @@ typedef struct {
 	int32_t	result;
 	uint16_t trap_toggle;
 	uint64_t totalexec;
+	FPU_t fpu;
 	void (*int_callback[256])(void*, uint8_t); //Want to pass a CPU object in first param, but it's not defined at this point so use a void*
+	uint8_t handling_fault;
 } CPU_t;
 
 #define regax 0
@@ -77,10 +99,10 @@ typedef struct {
 #endif
 
 #define StepIP(mycpu, x)	mycpu->ip += x
-#define getmem8(mycpu, x, y)	cpu_read(mycpu, segbase(x) + y)
-#define getmem16(mycpu, x, y)	cpu_readw(mycpu, segbase(x) + y)
-#define putmem8(mycpu, x, y, z)	cpu_write(mycpu, segbase(x) + y, z)
-#define putmem16(mycpu, x, y, z)	cpu_writew(mycpu, segbase(x) + y, z)
+#define getmem8(mycpu, x, y)	cpu_read(mycpu, get_real_address(mycpu, x, y))
+#define getmem16(mycpu, x, y)	cpu_readw(mycpu, get_real_address(mycpu, x, y))
+#define putmem8(mycpu, x, y, z)	cpu_write(mycpu, get_real_address(mycpu, x, y), z)
+#define putmem16(mycpu, x, y, z)	cpu_writew(mycpu, get_real_address(mycpu, x, y), z)
 #define signext(value)	(int16_t)(int8_t)(value)
 #define signext32(value)	(int32_t)(int16_t)(value)
 #define getreg16(mycpu, regid)	mycpu->regs.wordregs[regid]
@@ -151,7 +173,6 @@ typedef struct {
 	} \
 }
 
-
 uint8_t cpu_read(CPU_t* cpu, uint32_t addr);
 uint16_t cpu_readw(CPU_t* cpu, uint32_t addr);
 void cpu_write(CPU_t* cpu, uint32_t addr32, uint8_t value);
@@ -165,5 +186,6 @@ void port_writew(CPU_t* cpu, uint16_t portnum, uint16_t value);
 uint8_t port_read(CPU_t* cpu, uint16_t portnum);
 uint16_t port_readw(CPU_t* cpu, uint16_t portnum);
 void cpu_registerIntCallback(CPU_t* cpu, uint8_t interrupt, void (*cb)(CPU_t*, uint8_t));
+void push(CPU_t* cpu, uint16_t pushval);
 
 #endif

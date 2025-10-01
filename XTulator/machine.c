@@ -48,6 +48,8 @@
 #include "modules/video/cga.h"
 #include "modules/video/vga.h"
 #include "rtc.h"
+#include "cmos.h"
+#include "chipset/i8042.h"
 #include "memory.h"
 #include "utility.h"
 #include "timing.h"
@@ -59,6 +61,15 @@
 const MACHINEDEF_t machine_defs[] = {
 	{ "generic_xt", "Generic XT clone with VGA, speed unlimited", machine_init_generic_xt, VIDEO_CARD_VGA, -1, MACHINE_HW_BLASTER | MACHINE_HW_UART1_MOUSE | MACHINE_HW_DISK_HLE | MACHINE_HW_RTC },
 	{ "ibm_xt", "IBM XT", machine_init_generic_xt, VIDEO_CARD_CGA, 4.77, MACHINE_HW_UART1_MOUSE | MACHINE_HW_RTC },
+	{ "generic_at", "Generic AT clone (286)", machine_init_generic_xt, VIDEO_CARD_VGA, 16.0, MACHINE_HW_BLASTER | MACHINE_HW_UART1_MOUSE | MACHINE_HW_DISK_HLE | MACHINE_HW_RTC },
+	{ "landmark_at", "Supersoft/Landmark AT Diagnostic ROM", machine_init_generic_xt, VIDEO_CARD_CGA, 6.0, MACHINE_HW_RTC },
+	{ "ami_at_ht12", "AMI 286 AT Clone (Headland HT12)", machine_init_generic_xt, VIDEO_CARD_VGA, 12.0, MACHINE_HW_RTC | MACHINE_HW_DISK_HLE },
+	{ "quadtel_at", "Quadtel 286 AT Clone (v3.04.02)", machine_init_generic_xt, VIDEO_CARD_VGA, 12.0, MACHINE_HW_RTC | MACHINE_HW_DISK_HLE },
+	{ "award_286", "Award 286 AT Clone (128KB BIOS)", machine_init_generic_xt, VIDEO_CARD_VGA, 12.0, MACHINE_HW_RTC | MACHINE_HW_DISK_HLE },
+	{ "award_at", "Award 286 AT clone", machine_init_generic_xt, VIDEO_CARD_VGA, 8.0, MACHINE_HW_BLASTER | MACHINE_HW_UART1_MOUSE | MACHINE_HW_DISK_HLE | MACHINE_HW_RTC },
+	{ "seabios_at", "Generic 286 AT with SeaBIOS", machine_init_generic_xt, VIDEO_CARD_VGA, 8.0, MACHINE_HW_BLASTER | MACHINE_HW_UART1_MOUSE | MACHINE_HW_DISK_HLE | MACHINE_HW_RTC },
+	{ "atbios_v3", "Custom AT BIOS v3 (286)", machine_init_generic_xt, VIDEO_CARD_VGA, 12.0, MACHINE_HW_BLASTER | MACHINE_HW_UART1_MOUSE | MACHINE_HW_DISK_HLE | MACHINE_HW_RTC },
+	{ "ibm_5170", "IBM PC/AT 5170", machine_init_generic_xt, VIDEO_CARD_VGA, 8.0, MACHINE_HW_BLASTER | MACHINE_HW_UART1_MOUSE | MACHINE_HW_DISK_HLE | MACHINE_HW_RTC },
 	{ "ami_xt", "AMI XT clone", machine_init_generic_xt, VIDEO_CARD_CGA, 4.77, MACHINE_HW_UART1_MOUSE | MACHINE_HW_RTC },
 	{ "phoenix_xt", "Pheonix XT clone", machine_init_generic_xt, VIDEO_CARD_CGA, 4.77, MACHINE_HW_UART1_MOUSE | MACHINE_HW_RTC },
 	{ "xi8088", "Xi 8088", machine_init_generic_xt, VIDEO_CARD_CGA, 4.77, MACHINE_HW_UART1_MOUSE | MACHINE_HW_RTC },
@@ -71,10 +82,9 @@ const MACHINEMEM_t machine_mem[][10] = {
 	//Generic XT clone
 	{
 		{ MACHINE_MEM_RAM, 0x00000, 0xA0000, MACHINE_ROM_ISNOTROM, NULL },
-#ifndef USE_DISK_HLE
-		{ MACHINE_MEM_ROM, 0xD0000, 0x02000, MACHINE_ROM_REQUIRED, "roms/disk/ide_xt.bin" },
-#endif
-		{ MACHINE_MEM_ROM, 0xFE000, 0x02000, MACHINE_ROM_REQUIRED, "roms/machine/generic_xt/pcxtbios.bin" },
+		{ MACHINE_MEM_RAM, 0x100000, 0xF00000, MACHINE_ROM_ISNOTROM, NULL },
+		{ MACHINE_MEM_ROM, 0xFC000, 0x4000, MACHINE_ROM_REQUIRED, "roms/machine/generic_xt/bios_expanded_16kb.bin" },
+		{ MACHINE_MEM_ROM, 0xFFC000, 0x4000, MACHINE_ROM_REQUIRED, "roms/machine/generic_xt/bios_expanded_16kb.bin" },
 		{ MACHINE_MEM_ENDLIST, 0, 0, 0, NULL }
 	},
 
@@ -86,6 +96,91 @@ const MACHINEMEM_t machine_mem[][10] = {
 #endif
 		{ MACHINE_MEM_ROM, 0xF0000, 0x08000, MACHINE_ROM_REQUIRED, "roms/machine/ibm_xt/5000027.u19" },
 		{ MACHINE_MEM_ROM, 0xF8000, 0x08000, MACHINE_ROM_REQUIRED, "roms/machine/ibm_xt/1501512.u18" },
+		{ MACHINE_MEM_ENDLIST, 0, 0, 0, NULL }
+	},
+
+	//generic AT Clone
+	{
+		{ MACHINE_MEM_RAM, 0x00000, 0xA0000, MACHINE_ROM_ISNOTROM, NULL },
+		{ MACHINE_MEM_RAM, 0x100000, 0xF00000, MACHINE_ROM_ISNOTROM, NULL },
+#ifndef USE_DISK_HLE
+		{ MACHINE_MEM_ROM, 0xD0000, 0x02000, MACHINE_ROM_REQUIRED, "roms/disk/ide_xt.bin" },
+#endif
+		{ MACHINE_MEM_ROM, 0xF0000, 0x10000, MACHINE_ROM_REQUIRED, "roms/machine/ami286/2ctc001.bin" },
+		{ MACHINE_MEM_ROM, 0xFF0000, 0x10000, MACHINE_ROM_REQUIRED, "roms/machine/ami286/2ctc001.bin" },
+		{ MACHINE_MEM_ENDLIST, 0, 0, 0, NULL }
+	},
+
+	// Landmark AT Diagnostic
+	{
+		{ MACHINE_MEM_RAM, 0x00000, 0xA0000, MACHINE_ROM_ISNOTROM, NULL },
+		{ MACHINE_MEM_RAM, 0x100000, 0xF00000, MACHINE_ROM_ISNOTROM, NULL },
+		{ MACHINE_MEM_ROM, 0xF8000, 0x8000, MACHINE_ROM_REQUIRED, "roms/machine/landmark/landmark.bin" },
+		{ MACHINE_MEM_ROM, 0xFF8000, 0x8000, MACHINE_ROM_REQUIRED, "roms/machine/landmark/landmark.bin" },
+		{ MACHINE_MEM_ENDLIST, 0, 0, 0, NULL }
+	},
+
+	// AMI 286 AT clone (Headland HT12, 64KB BIOS version)
+	{
+		{ MACHINE_MEM_RAM, 0x00000, 0xA0000, MACHINE_ROM_ISNOTROM, NULL },
+		{ MACHINE_MEM_RAM, 0x100000, 0xF00000, MACHINE_ROM_ISNOTROM, NULL },
+		{ MACHINE_MEM_ROM, 0xC0000, 32768, MACHINE_ROM_OPTIONAL, "roms/video/et4000.bin" },
+		{ MACHINE_MEM_ROM, 0xF0000, 0x10000, MACHINE_ROM_REQUIRED, "roms/machine/ami_at_ht12/ami_ht12_64kb.bin" },
+		{ MACHINE_MEM_ROM, 0xFF0000, 0x10000, MACHINE_ROM_REQUIRED, "roms/machine/ami_at_ht12/ami_ht12_64kb.bin" },
+		{ MACHINE_MEM_ENDLIST, 0, 0, 0, NULL }
+	},
+
+	// Quadtel 286 AT clone (64KB BIOS version)
+	{
+		{ MACHINE_MEM_RAM, 0x00000, 0xA0000, MACHINE_ROM_ISNOTROM, NULL },
+		{ MACHINE_MEM_RAM, 0x100000, 0xF00000, MACHINE_ROM_ISNOTROM, NULL },
+		{ MACHINE_MEM_ROM, 0xF0000, 0x10000, MACHINE_ROM_REQUIRED, "roms/machine/quadtel_at/quadtel_304_64kb.bin" },
+		{ MACHINE_MEM_ROM, 0xFF0000, 0x10000, MACHINE_ROM_REQUIRED, "roms/machine/quadtel_at/quadtel_304_64kb.bin" },
+		{ MACHINE_MEM_ENDLIST, 0, 0, 0, NULL }
+	},
+
+	// Award 286 AT clone (128KB BIOS version)
+	{
+		{ MACHINE_MEM_RAM, 0x00000, 0xA0000, MACHINE_ROM_ISNOTROM, NULL },
+		{ MACHINE_MEM_RAM, 0x100000, 0xF00000, MACHINE_ROM_ISNOTROM, NULL },
+		{ MACHINE_MEM_ROM, 0xE0000, 0x20000, MACHINE_ROM_REQUIRED, "roms/machine/award_286/award286.bin" },
+		{ MACHINE_MEM_ROM, 0xFE0000, 0x20000, MACHINE_ROM_REQUIRED, "roms/machine/award_286/award286.bin" },
+		{ MACHINE_MEM_ENDLIST, 0, 0, 0, NULL }
+	},
+
+	// Award 286 AT clone (64KB BIOS version)
+	{
+		{ MACHINE_MEM_RAM, 0x00000, 0xA0000, MACHINE_ROM_ISNOTROM, NULL },
+		{ MACHINE_MEM_RAM, 0x100000, 0xF00000, MACHINE_ROM_ISNOTROM, NULL },
+		{ MACHINE_MEM_ROM, 0xE0000, 0x8000, MACHINE_ROM_REQUIRED, "roms/machine/award_at_2chip/BIOS_5170_30APR89_U47_AMI_27256.bin" }, // Low 32KB
+		{ MACHINE_MEM_ROM, 0xF8000, 0x8000, MACHINE_ROM_REQUIRED, "roms/machine/award_at_2chip/BIOS_5170_30APR89_U27_AMI_27256.bin" }, // High 32KB (at F8000)
+		{ MACHINE_MEM_ROM, 0xFF8000, 0x8000, MACHINE_ROM_REQUIRED, "roms/machine/award_at_2chip/BIOS_5170_30APR89_U27_AMI_27256.bin" }, // High 32KB (mirrored at FF8000 for reset vector)
+		{ MACHINE_MEM_ENDLIST, 0, 0, 0, NULL }
+	},
+
+	// SeaBIOS AT (128KB BIOS version)
+	{
+		{ MACHINE_MEM_RAM, 0x00000, 0xA0000, MACHINE_ROM_ISNOTROM, NULL },
+		{ MACHINE_MEM_RAM, 0x100000, 0x100000, MACHINE_ROM_ISNOTROM, NULL },
+		{ MACHINE_MEM_ROM, 0xE0000, 0x20000, MACHINE_ROM_REQUIRED, "roms/machine/seabios_at/bios.bin" },
+		{ MACHINE_MEM_ROM, 0xFE0000, 0x20000, MACHINE_ROM_REQUIRED, "roms/machine/seabios_at/bios.bin" },
+		{ MACHINE_MEM_ENDLIST, 0, 0, 0, NULL }
+	},
+
+	// Custom AT BIOS v3
+	{
+		{ MACHINE_MEM_RAM, 0x00000, 0xA0000, MACHINE_ROM_ISNOTROM, NULL },
+		{ MACHINE_MEM_RAM, 0x100000, 0xF00000, MACHINE_ROM_ISNOTROM, NULL },
+		{ MACHINE_MEM_ROM, 0xFE000, 0x2000, MACHINE_ROM_REQUIRED, "roms/machine/bios.bin" },
+		{ MACHINE_MEM_ENDLIST, 0, 0, 0, NULL }
+	},
+
+	// IBM 5170
+	{
+		{ MACHINE_MEM_RAM, 0x00000, 0xA0000, MACHINE_ROM_ISNOTROM, NULL },
+		{ MACHINE_MEM_RAM, 0x100000, 0xE00000, MACHINE_ROM_ISNOTROM, NULL },
+		{ MACHINE_MEM_ROM, 0xF0000, 0x10000, MACHINE_ROM_REQUIRED, "roms/machine/ibm_5170/BIOS_5170_V3_64KB.bin" },
+		{ MACHINE_MEM_ROM, 0xFF0000, 0x10000, MACHINE_ROM_REQUIRED, "roms/machine/ibm_5170/BIOS_5170_V3_64KB.bin" },
 		{ MACHINE_MEM_ENDLIST, 0, 0, 0, NULL }
 	},
 
@@ -143,10 +238,16 @@ uint8_t mac[6] = { 0xac, 0xde, 0x48, 0x88, 0xbb, 0xab };
 int machine_init_generic_xt(MACHINE_t* machine) {
 	if (machine == NULL) return -1;
 
-	i8259_init(&machine->i8259);
+	i8259_init(&machine->i8259, 0, &machine->i8259_slave);
+	i8259_init(&machine->i8259_slave, 1, &machine->i8259);
 	i8253_init(&machine->i8253, &machine->i8259, &machine->pcspeaker);
-	i8237_init(&machine->i8237, &machine->CPU);
+	i8237_init(&machine->i8237, &machine->CPU, 0x00, 0x87, 0);
+	i8237_init(&machine->i8237_slave, &machine->CPU, 0xC0, 0x89, 1);
 	i8255_init(&machine->i8255, &machine->KeyState, &machine->pcspeaker);
+	i8042_init(&machine->i8042, &machine->CPU, &machine->i8259, &machine->KeyState);
+	extern void port92_write(void* udata, uint32_t port, uint8_t value);
+	extern uint8_t port92_read(void* udata, uint32_t port);
+	ports_cbRegister(0x92, 1, port92_read, NULL, port92_write, NULL, NULL);
 	pcspeaker_init(&machine->pcspeaker);
 
 	//check machine HW flags and init devices accordingly
@@ -164,6 +265,7 @@ int machine_init_generic_xt(MACHINE_t* machine) {
 	if ((machine->hwflags & MACHINE_HW_RTC) && !(machine->hwflags & MACHINE_HW_SKIP_RTC)) {
 		rtc_init(&machine->CPU);
 	}
+	cmos_init(&machine->cmos);
 
 	if ((machine->hwflags & MACHINE_HW_UART0_NONE) && !(machine->hwflags & MACHINE_HW_SKIP_UART0)) {
 		uart_init(&machine->UART[0], &machine->i8259, 0x3F8, 4, NULL, NULL, NULL, NULL);
@@ -253,19 +355,19 @@ int machine_init(MACHINE_t* machine, char* id) {
 		if (machine_mem[num][i].memtype == MACHINE_MEM_ENDLIST) {
 			break;
 		}
-		temp = (uint8_t*)malloc((size_t)machine_mem[num][i].size);
-		if ((temp == NULL) &&
-			((machine_mem[num][i].required == MACHINE_ROM_REQUIRED) || (machine_mem[num][i].required == MACHINE_ROM_ISNOTROM))) {
-			debug_log(DEBUG_ERROR, "[MACHINE] ERROR: Unable to allocate %lu bytes of memory\r\n", machine_mem[num][i].size);
-			return -1;
-		}
 		if (machine_mem[num][i].memtype == MACHINE_MEM_RAM) {
-			memory_mapRegister(machine_mem[num][i].start, machine_mem[num][i].size, temp, temp);
+			memory_mapRegister(machine_mem[num][i].start, machine_mem[num][i].size, &main_ram[machine_mem[num][i].start], &main_ram[machine_mem[num][i].start]);
 		} else if (machine_mem[num][i].memtype == MACHINE_MEM_ROM) {
+			temp = (uint8_t*)malloc((size_t)machine_mem[num][i].size);
+			if (temp == NULL) {
+				debug_log(DEBUG_ERROR, "[MACHINE] ERROR: Unable to allocate %lu bytes for ROM\r\n", machine_mem[num][i].size);
+				return -1;
+			}
 			int ret;
 			ret = utility_loadFile(temp, machine_mem[num][i].size, machine_mem[num][i].filename);
 			if ((machine_mem[num][i].required == MACHINE_ROM_REQUIRED) && ret) {
 				debug_log(DEBUG_ERROR, "[MACHINE] Could not open file, or size is less than expected: %s\r\n", machine_mem[num][i].filename);
+				free(temp);
 				return -1;
 			}
 			memory_mapRegister(machine_mem[num][i].start, machine_mem[num][i].size, temp, NULL);

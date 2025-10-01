@@ -26,6 +26,9 @@
 #include "modules/video/vga.h"
 #include "utility.h"
 #include "memory.h"
+#include "chipset/i8042.h"
+
+uint8_t* main_ram = NULL;
 
 uint8_t* memory_mapRead[MEMORY_RANGE];
 uint8_t* memory_mapWrite[MEMORY_RANGE];
@@ -34,7 +37,7 @@ void (*memory_mapWriteCallback[MEMORY_RANGE])(void* udata, uint32_t addr, uint8_
 void* memory_udata[MEMORY_RANGE];
 
 void cpu_write(CPU_t* cpu, uint32_t addr32, uint8_t value) {
-	addr32 &= MEMORY_MASK;
+	addr32 &= (a20_enabled) ? MEMORY_MASK : 0x0FFFFF;
 
 	if (memory_mapWrite[addr32] != NULL) {
 		*(memory_mapWrite[addr32]) = value;
@@ -45,7 +48,7 @@ void cpu_write(CPU_t* cpu, uint32_t addr32, uint8_t value) {
 }
 
 uint8_t cpu_read(CPU_t* cpu, uint32_t addr32) {
-	addr32 &= MEMORY_MASK;
+	addr32 &= (a20_enabled) ? MEMORY_MASK : 0x0FFFFF;
 
 	if (memory_mapRead[addr32] != NULL) {
 		return *(memory_mapRead[addr32]);
@@ -83,6 +86,11 @@ void memory_mapCallbackRegister(uint32_t start, uint32_t count, uint8_t(*readb)(
 
 int memory_init() {
 	uint32_t i;
+
+	main_ram = (uint8_t*)malloc(MEMORY_RANGE);
+	if (main_ram == NULL) {
+		return -1;
+	}
 
 	for (i = 0; i < MEMORY_RANGE; i++) {
 		memory_mapRead[i] = NULL;

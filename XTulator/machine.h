@@ -17,6 +17,8 @@
 #include "modules/audio/pcspeaker.h"
 #include "modules/disk/fdc.h"
 #include "modules/input/input.h"
+#include "cmos.h"
+#include "chipset/i8042.h"
 
 #define MACHINE_MEM_RAM			0
 #define MACHINE_MEM_ROM			1
@@ -49,9 +51,13 @@
 typedef struct {
 	CPU_t CPU;
 	I8259_t i8259;
+	I8259_t i8259_slave;
 	I8253_t i8253;
 	I8237_t i8237;
+	I8237_t i8237_slave;
 	I8255_t i8255;
+	CMOS_t cmos;
+	I8042_t i8042;
 	UART_t UART[2];
 #ifdef ENABLE_TCP_MODEM
 	TCPMODEM_t tcpmodem[2];

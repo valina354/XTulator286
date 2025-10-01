@@ -35,7 +35,7 @@
 #include "../../debuglog.h"
 #ifdef _WIN32
 #include <Windows.h>
-#include <SDL/SDL.h>
+#include <SDL.h>
 #include <process.h>
 #else
 #include <sys/time.h>
