@@ -11,6 +11,10 @@ start:
     mov ss, ax
     mov sp, 0x7C00
 
+    mov ah, 0x00
+    mov al, 0x03
+    int 0x10
+
     lgdt [gdt_descriptor]
 
     mov ax, 1
