@@ -14,6 +14,10 @@ start:
     mov ah, 0x00
     mov al, 0x03
     int 0x10
+	
+    in al, 0x92
+    or al, 00000010b
+    out 0x92, al
 
     lgdt [gdt_descriptor]
 
