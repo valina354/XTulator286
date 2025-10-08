@@ -105,8 +105,8 @@ void load_ldtr(CPU_t* cpu, uint16_t selector) {
 
 	uint16_t cpl = cpu->segregs[regcs] & 3;
 	if (cpl != 0) {
-		debug_log(DEBUG_ERROR, "[CPU] LLDT: GPF(#0) - CPL != 0\n");
-		cpu_intcall(cpu, 0);
+		debug_log(DEBUG_ERROR, "[CPU] LLDT: GPF(#13) - CPL != 0\n");
+		cpu_intcall(cpu, 13);
 		return;
 	}
 
@@ -145,6 +145,7 @@ void load_descriptor(CPU_t* cpu, uint8_t seg_reg, uint16_t selector) {
 	if ((selector & 0xFFFC) == 0) {
 		if (seg_reg == regss) {
 			debug_log(DEBUG_ERROR, "[CPU] GPF(#13): Attempted to load SS with a null selector.\n");
+			push(cpu, 0);
 			cpu_intcall(cpu, 13);
 			return;
 		}
@@ -160,6 +161,7 @@ void load_descriptor(CPU_t* cpu, uint8_t seg_reg, uint16_t selector) {
 	if (selector & 0x0004) {
 		if (!cpu->ldtr_cache.valid) {
 			debug_log(DEBUG_ERROR, "[CPU] GPF(#13): LDT is not valid but selector %04X references it.\n", selector);
+			push(cpu, selector & 0xFFFC);
 			cpu_intcall(cpu, 13);
 			return;
 		}
@@ -174,6 +176,7 @@ void load_descriptor(CPU_t* cpu, uint8_t seg_reg, uint16_t selector) {
 	uint16_t index = selector >> 3;
 	if ((index * 8) + 7 > table_limit) {
 		debug_log(DEBUG_ERROR, "[CPU] GPF(#13): Selector %04X exceeds table limit %04X\n", selector, table_limit);
+		push(cpu, selector & 0xFFFC);
 		cpu_intcall(cpu, 13);
 		cache->valid = 0;
 		return;
@@ -189,6 +192,7 @@ void load_descriptor(CPU_t* cpu, uint8_t seg_reg, uint16_t selector) {
 
 	if (!(access & 0x80)) {
 		debug_log(DEBUG_ERROR, "[CPU] NPF(#11): Segment %04X not present. Access byte: 0x%02X\n", selector, access);
+		push(cpu, selector & 0xFFFC);
 		cpu_intcall(cpu, 11);
 		return;
 	}
@@ -197,7 +201,7 @@ void load_descriptor(CPU_t* cpu, uint8_t seg_reg, uint16_t selector) {
 		bool is_writable_data = !(access & 0x08) && (access & 0x02);
 		if (rpl != cpl || dpl != cpl || !is_writable_data) {
 			debug_log(DEBUG_ERROR, "[CPU] GPF(#13): Invalid SS selector %04X. CPL=%d, RPL=%d, DPL=%d, Access=0x%02X\n", selector, cpl, rpl, dpl, access);
-			push(cpu, selector);
+			push(cpu, selector & 0xFFFC);
 			cpu_intcall(cpu, 13);
 			return;
 		}
@@ -205,11 +209,13 @@ void load_descriptor(CPU_t* cpu, uint8_t seg_reg, uint16_t selector) {
 	else if (seg_reg == regcs) {
 		if (!(access & 0x08)) {
 			debug_log(DEBUG_ERROR, "[CPU] GPF(#13): Attempted to load CS with a non-code segment selector %04X.\n", selector);
+			push(cpu, selector & 0xFFFC);
 			cpu_intcall(cpu, 13);
 			return;
 		}
 		if (dpl > cpl) {
 			debug_log(DEBUG_ERROR, "[CPU] GPF(#13): Cannot load CS with selector %04X due to privilege mismatch (DPL > CPL).\n", selector);
+			push(cpu, selector & 0xFFFC);
 			cpu_intcall(cpu, 13);
 			return;
 		}
@@ -219,11 +225,13 @@ void load_descriptor(CPU_t* cpu, uint8_t seg_reg, uint16_t selector) {
 		bool is_readable_code = (access & 0x0A) == 0x0A;
 		if (!is_data && !is_readable_code) {
 			debug_log(DEBUG_ERROR, "[CPU] GPF(#13): Attempted to load DS/ES with invalid segment type %04X.\n", selector);
+			push(cpu, selector & 0xFFFC);
 			cpu_intcall(cpu, 13);
 			return;
 		}
 		if ((cpl > dpl) || (rpl > dpl)) {
 			debug_log(DEBUG_ERROR, "[CPU] GPF(#13): Privilege violation loading DS/ES with selector %04X. CPL=%d, RPL=%d, DPL=%d\n", selector, cpl, rpl, dpl);
+			push(cpu, selector & 0xFFFC);
 			cpu_intcall(cpu, 13);
 			return;
 		}
@@ -232,6 +240,12 @@ void load_descriptor(CPU_t* cpu, uint8_t seg_reg, uint16_t selector) {
 	cache->limit = limit;
 	cache->base = base;
 	cache->access = access;
+	if (!(access & 0x08)) {
+		cache->expand_down = (access & 0x04) ? 1 : 0;
+	}
+	else {
+		cache->expand_down = 0;
+	}
 	cache->valid = 1;
 	cpu->segregs[seg_reg] = selector;
 }
@@ -274,9 +288,6 @@ int get_descriptor_info(CPU_t* cpu, uint16_t selector, uint32_t* base, uint16_t*
 	*limit = cpu_readw(cpu, addr);
 	*base = cpu_read(cpu, addr + 2) | (cpu_read(cpu, addr + 3) << 8) | (cpu_read(cpu, addr + 4) << 16);
 	*access = cpu_read(cpu, addr + 5);
-
-	debug_log(DEBUG_INFO, "[CPU] get_descriptor_info(sel=%04X): Found at %08X -> base=%06X, limit=%04X, access=%02X\n",
-		selector, addr, *base, *limit, *access);
 
 	return 1;
 }
@@ -709,19 +720,32 @@ uint32_t translate_address_safe(CPU_t* cpu, uint16_t seg, uint16_t off, int* fau
 	}
 
 	DESCRIPTOR_CACHE* cache = NULL;
-	if (seg == cpu->segregs[regcs]) cache = &cpu->segcache[regcs];
-	else if (seg == cpu->segregs[regds]) cache = &cpu->segcache[regds];
-	else if (seg == cpu->segregs[reges]) cache = &cpu->segcache[reges];
-	else if (seg == cpu->segregs[regss]) cache = &cpu->segcache[regss];
+	const char* seg_name = "??";
+
+	if (seg == cpu->segregs[regcs]) { cache = &cpu->segcache[regcs]; seg_name = "CS"; }
+	else if (seg == cpu->segregs[regds]) { cache = &cpu->segcache[regds]; seg_name = "DS"; }
+	else if (seg == cpu->segregs[reges]) { cache = &cpu->segcache[reges]; seg_name = "ES"; }
+	else if (seg == cpu->segregs[regss]) { cache = &cpu->segcache[regss]; seg_name = "SS"; }
 
 	if (!cache || !cache->valid) {
+		debug_log(DEBUG_ERROR, "[CPU] Address Translation Fault: Selector %04X (%s) has an invalid/null descriptor cache.\n", seg, seg_name);
 		if (fault) *fault = 1;
 		return 0xFFFFFFFF;
 	}
 
-	if (off > cache->limit) {
-		if (fault) *fault = 1;
-		return 0xFFFFFFFF;
+	if (cache->expand_down) {
+		if (off <= cache->limit) {
+			debug_log(DEBUG_ERROR, "[CPU] Address Translation Fault: Segment limit violation in expand-down %s. Offset %04X <= Limit %04X\n", seg_name, off, cache->limit);
+			if (fault) *fault = 1;
+			return 0xFFFFFFFF;
+		}
+	}
+	else {
+		if (off > cache->limit) {
+			debug_log(DEBUG_ERROR, "[CPU] Address Translation Fault: Segment limit violation in %s. Offset %04X > Limit %04X\n", seg_name, off, cache->limit);
+			if (fault) *fault = 1;
+			return 0xFFFFFFFF;
+		}
 	}
 
 	if (fault) *fault = 0;
@@ -733,6 +757,7 @@ uint32_t get_real_address(CPU_t* cpu, uint16_t seg, uint16_t off) {
 		int fault = 0;
 		uint32_t addr = translate_address_safe(cpu, seg, off, &fault);
 		if (fault) {
+			debug_log(DEBUG_ERROR, "[CPU] get_real_address failed, triggering GPF(#13).\n");
 			cpu_intcall(cpu, 13);
 			return 0;
 		}
@@ -764,6 +789,7 @@ void cpu_reset(CPU_t* cpu) {
 	cpu->idtr.base = 0;
 	cpu->idtr.limit = 0x03FF;
 	cpu->handling_fault = 0;
+	cpu->nt = 0;
 	cpu->ldtr = 0;
 	cpu->tr = 0;
 	cpu->protected_mode = 0;
@@ -1374,6 +1400,7 @@ void cpu_intcall(CPU_t* cpu, uint8_t intnum) {
 			return;
 		}
 		debug_log(DEBUG_ERROR, "[CPU] Double Fault triggered (INT %u while handling another fault).\n", intnum);
+		push(cpu, 0);
 		cpu_intcall(cpu, 8);
 		return;
 	}
@@ -1475,18 +1502,12 @@ void cpu_intcall(CPU_t* cpu, uint8_t intnum) {
 			push(cpu, old_flags);
 			push(cpu, old_cs);
 			push(cpu, old_ip);
-			if (intnum == 8 || (intnum >= 10 && intnum <= 13)) {
-				push(cpu, 0);
-			}
 
 		}
 		else {
 			push(cpu, old_flags);
 			push(cpu, old_cs);
 			push(cpu, old_ip);
-			if (intnum == 8 || (intnum >= 10 && intnum <= 13)) {
-				push(cpu, 0);
-			}
 		}
 
 		load_descriptor(cpu, regcs, new_cs);
@@ -1757,7 +1778,6 @@ void cpu_exec(CPU_t* cpu, uint32_t execloops) {
 						break;
 					case 3: // LTR
 						if ((cpu->segregs[regcs] & 3) != 0) {
-							debug_log(DEBUG_ERROR, "[CPU] LTR: GPF(#13) - CPL != 0\n");
 							cpu_intcall(cpu, 13);
 							break;
 						}
@@ -1817,6 +1837,14 @@ void cpu_exec(CPU_t* cpu, uint32_t execloops) {
 					cpu_write(cpu, cpu->ea + 4, (cpu->idtr.base >> 16) & 0xFF);
 					break;
 				case 2: // LGDT
+					if (cpu->protected_mode) {
+						uint8_t cpl = cpu->segregs[regcs] & 3;
+						if (cpl != 0) {
+							debug_log(DEBUG_ERROR, "[CPU] GPF(#13): LGDT executed with CPL > 0\n");
+							cpu_intcall(cpu, 13);
+							break;
+						}
+					}
 					getea(cpu, cpu->rm);
 					uint16_t gdt_limit = cpu_readw(cpu, cpu->ea);
 					uint32_t gdt_base = cpu_read(cpu, cpu->ea + 2)
@@ -1826,6 +1854,13 @@ void cpu_exec(CPU_t* cpu, uint32_t execloops) {
 					cpu->gdtr.base = gdt_base;
 					break;
 				case 3: // LIDT
+					if (cpu->protected_mode) {
+						uint8_t cpl = cpu->segregs[regcs] & 3;
+						if (cpl != 0) {
+							cpu_intcall(cpu, 13);
+							break;
+						}
+					}
 					getea(cpu, cpu->rm);
 					uint16_t idt_limit = cpu_readw(cpu, cpu->ea);
 					uint32_t idt_base = cpu_read(cpu, cpu->ea + 2)
@@ -1838,6 +1873,13 @@ void cpu_exec(CPU_t* cpu, uint32_t execloops) {
 					writerm16(cpu, cpu->rm, cpu->msw);
 					break;
 				case 6: // LMSW Ew
+					if (cpu->protected_mode) {
+						uint8_t cpl = cpu->segregs[regcs] & 3;
+						if (cpl != 0) {
+							cpu_intcall(cpu, 13);
+							break;
+						}
+					}
 					cpu->oper1 = readrm16(cpu, cpu->rm);
 
 					if (cpu->msw & 1) {
@@ -1985,6 +2027,13 @@ void cpu_exec(CPU_t* cpu, uint32_t execloops) {
 				cpu->protected_mode = (cpu->msw & 1);
 				break;
 			case 0x06: /* CLTS */
+				if (cpu->protected_mode) {
+					uint8_t cpl = cpu->segregs[regcs] & 3;
+					if (cpl != 0) {
+						cpu_intcall(cpu, 13);
+						break;
+					}
+				}
 				cpu->msw &= ~0x0008;
 				break;
 			default:
@@ -2622,10 +2671,7 @@ void cpu_exec(CPU_t* cpu, uint32_t execloops) {
 				cpu->oper1 = readrm16(cpu, cpu->rm);
 				cpu->oper2 = getreg16(cpu, cpu->reg);
 
-				if ((cpu->oper2 & 0xFFFC) == 0) {
-					cpu_intcall(cpu, 13);
-				}
-				else if ((cpu->oper1 & 3) < (cpu->oper2 & 3)) {
+				if ((cpu->oper1 & 3) < (cpu->oper2 & 3)) {
 					cpu->zf = 1;
 					cpu->oper1 = (cpu->oper1 & 0xFFFC) | (cpu->oper2 & 3);
 					writerm16(cpu, cpu->rm, cpu->oper1);
@@ -2696,11 +2742,18 @@ void cpu_exec(CPU_t* cpu, uint32_t execloops) {
 			}
 			break;
 
-		case 0x6C:	/* 6E INSB */
+		case 0x6C:	/* INSB */
+			if (cpu->protected_mode) {
+				uint8_t cpl = cpu->segregs[regcs] & 3;
+				uint8_t iopl = (makeflagsword(cpu) >> 12) & 3;
+				if (cpl > iopl) {
+					cpu_intcall(cpu, 13);
+					break;
+				}
+			}
 			if (cpu->reptype && (cpu->regs.wordregs[regcx] == 0)) {
 				break;
 			}
-
 			putmem8(cpu, cpu->segregs[reges], cpu->regs.wordregs[regdi], port_read(cpu, cpu->regs.wordregs[regdx]));
 			if (cpu->df) {
 				cpu->regs.wordregs[regsi] = cpu->regs.wordregs[regsi] - 1;
@@ -2710,24 +2763,28 @@ void cpu_exec(CPU_t* cpu, uint32_t execloops) {
 				cpu->regs.wordregs[regsi] = cpu->regs.wordregs[regsi] + 1;
 				cpu->regs.wordregs[regdi] = cpu->regs.wordregs[regdi] + 1;
 			}
-
 			if (cpu->reptype) {
 				cpu->regs.wordregs[regcx] = cpu->regs.wordregs[regcx] - 1;
 			}
-
 			loopcount++;
 			if (!cpu->reptype) {
 				break;
 			}
-
 			cpu->ip = firstip;
 			break;
 
-		case 0x6D:	/* 6F INSW */
+		case 0x6D:	/* INSW */
+			if (cpu->protected_mode) {
+				uint8_t cpl = cpu->segregs[regcs] & 3;
+				uint8_t iopl = (makeflagsword(cpu) >> 12) & 3;
+				if (cpl > iopl) {
+					cpu_intcall(cpu, 13);
+					break;
+				}
+			}
 			if (cpu->reptype && (cpu->regs.wordregs[regcx] == 0)) {
 				break;
 			}
-
 			putmem16(cpu, cpu->segregs[reges], cpu->regs.wordregs[regdi], port_readw(cpu, cpu->regs.wordregs[regdx]));
 			if (cpu->df) {
 				cpu->regs.wordregs[regsi] = cpu->regs.wordregs[regsi] - 2;
@@ -2737,24 +2794,28 @@ void cpu_exec(CPU_t* cpu, uint32_t execloops) {
 				cpu->regs.wordregs[regsi] = cpu->regs.wordregs[regsi] + 2;
 				cpu->regs.wordregs[regdi] = cpu->regs.wordregs[regdi] + 2;
 			}
-
 			if (cpu->reptype) {
 				cpu->regs.wordregs[regcx] = cpu->regs.wordregs[regcx] - 1;
 			}
-
 			loopcount++;
 			if (!cpu->reptype) {
 				break;
 			}
-
 			cpu->ip = firstip;
 			break;
 
-		case 0x6E:	/* 6E OUTSB */
+		case 0x6E:	/* OUTSB */
+			if (cpu->protected_mode) {
+				uint8_t cpl = cpu->segregs[regcs] & 3;
+				uint8_t iopl = (makeflagsword(cpu) >> 12) & 3;
+				if (cpl > iopl) {
+					cpu_intcall(cpu, 13);
+					break;
+				}
+			}
 			if (cpu->reptype && (cpu->regs.wordregs[regcx] == 0)) {
 				break;
 			}
-
 			port_write(cpu, cpu->regs.wordregs[regdx], getmem8(cpu, cpu->useseg, cpu->regs.wordregs[regsi]));
 			if (cpu->df) {
 				cpu->regs.wordregs[regsi] = cpu->regs.wordregs[regsi] - 1;
@@ -2764,24 +2825,28 @@ void cpu_exec(CPU_t* cpu, uint32_t execloops) {
 				cpu->regs.wordregs[regsi] = cpu->regs.wordregs[regsi] + 1;
 				cpu->regs.wordregs[regdi] = cpu->regs.wordregs[regdi] + 1;
 			}
-
 			if (cpu->reptype) {
 				cpu->regs.wordregs[regcx] = cpu->regs.wordregs[regcx] - 1;
 			}
-
 			loopcount++;
 			if (!cpu->reptype) {
 				break;
 			}
-
 			cpu->ip = firstip;
 			break;
 
-		case 0x6F:	/* 6F OUTSW */
+		case 0x6F:	/* OUTSW */
+			if (cpu->protected_mode) {
+				uint8_t cpl = cpu->segregs[regcs] & 3;
+				uint8_t iopl = (makeflagsword(cpu) >> 12) & 3;
+				if (cpl > iopl) {
+					cpu_intcall(cpu, 13);
+					break;
+				}
+			}
 			if (cpu->reptype && (cpu->regs.wordregs[regcx] == 0)) {
 				break;
 			}
-
 			port_writew(cpu, cpu->regs.wordregs[regdx], getmem16(cpu, cpu->useseg, cpu->regs.wordregs[regsi]));
 			if (cpu->df) {
 				cpu->regs.wordregs[regsi] = cpu->regs.wordregs[regsi] - 2;
@@ -2791,16 +2856,13 @@ void cpu_exec(CPU_t* cpu, uint32_t execloops) {
 				cpu->regs.wordregs[regsi] = cpu->regs.wordregs[regsi] + 2;
 				cpu->regs.wordregs[regdi] = cpu->regs.wordregs[regdi] + 2;
 			}
-
 			if (cpu->reptype) {
 				cpu->regs.wordregs[regcx] = cpu->regs.wordregs[regcx] - 1;
 			}
-
 			loopcount++;
 			if (!cpu->reptype) {
 				break;
 			}
-
 			cpu->ip = firstip;
 			break;
 
@@ -3190,12 +3252,6 @@ void cpu_exec(CPU_t* cpu, uint32_t execloops) {
 
 			if (cpu->protected_mode) {
 				if (cpl > iopl) {
-					if (new_flags & 0x0200) {
-						old_flags |= 0x0200;
-					}
-					else {
-						old_flags &= ~0x0200;
-					}
 					new_flags = (new_flags & ~0x0200) | (old_flags & 0x0200);
 				}
 
@@ -3716,16 +3772,47 @@ void cpu_exec(CPU_t* cpu, uint32_t execloops) {
 			break;
 
 		case 0xCA:	/* CA RETF Iw */
-			cpu->oper1 = getmem16(cpu, cpu->segregs[regcs], cpu->ip);
-			cpu->ip = pop(cpu);
-			cpu->segregs[regcs] = pop(cpu);
-			cpu->regs.wordregs[regsp] = cpu->regs.wordregs[regsp] + cpu->oper1;
-			break;
-
 		case 0xCB:	/* CB RETF */
-			cpu->ip = pop(cpu);
-			cpu->segregs[regcs] = pop(cpu);
+		{
+			uint16_t params_to_pop = (cpu->opcode == 0xCA) ? getmem16(cpu, cpu->segregs[regcs], cpu->ip) : 0;
+			if (cpu->opcode == 0xCA) StepIP(cpu, 2);
+
+			if (cpu->protected_mode) {
+				uint8_t cpl = cpu->segregs[regcs] & 3;
+				uint16_t temp_ip = pop(cpu);
+				uint16_t temp_cs = pop(cpu);
+				uint8_t rpl = temp_cs & 3;
+
+				if (rpl > cpl) {
+					uint16_t temp_sp = pop(cpu);
+					uint16_t temp_ss = pop(cpu);
+					load_descriptor(cpu, regss, temp_ss);
+					if (!cpu->segcache[regss].valid) break;
+					cpu->regs.wordregs[regsp] = temp_sp;
+				}
+
+				load_descriptor(cpu, regcs, temp_cs);
+				if (!cpu->segcache[regcs].valid) break;
+				cpu->ip = temp_ip;
+				cpu->regs.wordregs[regsp] += params_to_pop;
+
+				uint8_t new_cpl = rpl;
+				if (cpu->segcache[regds].valid && new_cpl > ((cpu->segcache[regds].access >> 5) & 3)) {
+					cpu->segregs[regds] = 0;
+					cpu->segcache[regds].valid = 0;
+				}
+				if (cpu->segcache[reges].valid && new_cpl > ((cpu->segcache[reges].access >> 5) & 3)) {
+					cpu->segregs[reges] = 0;
+					cpu->segcache[reges].valid = 0;
+				}
+			}
+			else {
+				cpu->ip = pop(cpu);
+				cpu->segregs[regcs] = pop(cpu);
+				cpu->regs.wordregs[regsp] += params_to_pop;
+			}
 			break;
+		}
 
 		case 0xCC:	/* CC INT 3 */
 			cpu_intcall(cpu, 3);
@@ -3746,26 +3833,64 @@ void cpu_exec(CPU_t* cpu, uint32_t execloops) {
 		case 0xCF:	/* CF IRET */
 		{
 			if (cpu->protected_mode) {
+				if (cpu->nt) {
+					uint16_t backlink_selector = cpu_readw(cpu, cpu->tr_cache.base);
+					load_tr(cpu, backlink_selector);
+					break;
+				}
+
+				uint8_t cpl = cpu->segregs[regcs] & 3;
 				uint16_t temp_ip = pop(cpu);
 				uint16_t temp_cs = pop(cpu);
 				uint16_t temp_flags = pop(cpu);
-				uint8_t cpl = cpu->segregs[regcs] & 3;
 				uint8_t rpl = temp_cs & 3;
+
+				if (rpl < cpl) {
+					cpu->regs.wordregs[regsp] += 6;
+					push(cpu, temp_cs & 0xFFFC);
+					cpu_intcall(cpu, 13);
+					break;
+				}
 
 				if (rpl > cpl) {
 					uint16_t temp_sp = pop(cpu);
 					uint16_t temp_ss = pop(cpu);
 
 					load_descriptor(cpu, regss, temp_ss);
-					cpu->segregs[regss] = temp_ss;
+					if (!cpu->segcache[regss].valid) break;
+
 					cpu->regs.wordregs[regsp] = temp_sp;
 				}
 
 				load_descriptor(cpu, regcs, temp_cs);
-				cpu->segregs[regcs] = temp_cs;
-				cpu->ip = temp_ip;
-				decodeflagsword(cpu, temp_flags);
+				if (!cpu->segcache[regcs].valid) break;
 
+				cpu->ip = temp_ip;
+
+				uint8_t new_cpl = rpl;
+				if (cpu->segcache[regds].valid && new_cpl > ((cpu->segcache[regds].access >> 5) & 3)) {
+					cpu->segregs[regds] = 0;
+					cpu->segcache[regds].valid = 0;
+				}
+				if (cpu->segcache[reges].valid && new_cpl > ((cpu->segcache[reges].access >> 5) & 3)) {
+					cpu->segregs[reges] = 0;
+					cpu->segcache[reges].valid = 0;
+				}
+
+				uint16_t old_flags = makeflagsword(cpu);
+				uint8_t iopl = (old_flags >> 12) & 3;
+
+				if (new_cpl == 0) {
+					decodeflagsword(cpu, temp_flags);
+				}
+				else {
+					temp_flags = (temp_flags & ~0x3000) | (old_flags & 0x3000);
+
+					if (new_cpl > iopl) {
+						temp_flags = (temp_flags & ~0x0200) | (old_flags & 0x0200);
+					}
+					decodeflagsword(cpu, temp_flags);
+				}
 			}
 			else {
 				cpu->ip = pop(cpu);
@@ -3838,7 +3963,6 @@ void cpu_exec(CPU_t* cpu, uint32_t execloops) {
 		case 0xDD:
 		case 0xDF:	/* escape to x87 FPU */
 			if (cpu->msw & 0x0008) {
-				debug_log(DEBUG_INFO, "[CPU] FPU instruction with TS flag set. Triggering INT 7.\n");
 				cpu_intcall(cpu, 7);
 				cpu->ip = cpu->saveip;
 				break;
@@ -3882,25 +4006,57 @@ void cpu_exec(CPU_t* cpu, uint32_t execloops) {
 			}
 			break;
 
-		case 0xE4:	/* E4 IN cpu->regs.byteregs[regal] Ib */
+		case 0xE4:	/* IN AL, Ib */
+			if (cpu->protected_mode) {
+				uint8_t cpl = cpu->segregs[regcs] & 3;
+				uint8_t iopl = (makeflagsword(cpu) >> 12) & 3;
+				if (cpl > iopl) {
+					cpu_intcall(cpu, 13);
+					break;
+				}
+			}
 			cpu->oper1b = getmem8(cpu, cpu->segregs[regcs], cpu->ip);
 			StepIP(cpu, 1);
 			cpu->regs.byteregs[regal] = (uint8_t)port_read(cpu, cpu->oper1b);
 			break;
 
-		case 0xE5:	/* E5 IN eAX Ib */
+		case 0xE5:	/* IN AX, Ib */
+			if (cpu->protected_mode) {
+				uint8_t cpl = cpu->segregs[regcs] & 3;
+				uint8_t iopl = (makeflagsword(cpu) >> 12) & 3;
+				if (cpl > iopl) {
+					cpu_intcall(cpu, 13);
+					break;
+				}
+			}
 			cpu->oper1b = getmem8(cpu, cpu->segregs[regcs], cpu->ip);
 			StepIP(cpu, 1);
 			cpu->regs.wordregs[regax] = port_readw(cpu, cpu->oper1b);
 			break;
 
-		case 0xE6:	/* E6 OUT Ib cpu->regs.byteregs[regal] */
+		case 0xE6:	/* OUT Ib, AL */
+			if (cpu->protected_mode) {
+				uint8_t cpl = cpu->segregs[regcs] & 3;
+				uint8_t iopl = (makeflagsword(cpu) >> 12) & 3;
+				if (cpl > iopl) {
+					cpu_intcall(cpu, 13);
+					break;
+				}
+			}
 			cpu->oper1b = getmem8(cpu, cpu->segregs[regcs], cpu->ip);
 			StepIP(cpu, 1);
 			port_write(cpu, cpu->oper1b, cpu->regs.byteregs[regal]);
 			break;
 
-		case 0xE7:	/* E7 OUT Ib eAX */
+		case 0xE7:	/* OUT Ib, AX */
+			if (cpu->protected_mode) {
+				uint8_t cpl = cpu->segregs[regcs] & 3;
+				uint8_t iopl = (makeflagsword(cpu) >> 12) & 3;
+				if (cpl > iopl) {
+					cpu_intcall(cpu, 13);
+					break;
+				}
+			}
 			cpu->oper1b = getmem8(cpu, cpu->segregs[regcs], cpu->ip);
 			StepIP(cpu, 1);
 			port_writew(cpu, cpu->oper1b, cpu->regs.wordregs[regax]);
@@ -3936,27 +4092,66 @@ void cpu_exec(CPU_t* cpu, uint32_t execloops) {
 			cpu->ip = cpu->ip + cpu->oper1;
 			break;
 
-		case 0xEC:	/* EC IN cpu->regs.byteregs[regal] regdx */
+		case 0xEC:	/* IN AL, DX */
+			if (cpu->protected_mode) {
+				uint8_t cpl = cpu->segregs[regcs] & 3;
+				uint8_t iopl = (makeflagsword(cpu) >> 12) & 3;
+				if (cpl > iopl) {
+					cpu_intcall(cpu, 13);
+					break;
+				}
+			}
 			cpu->oper1 = cpu->regs.wordregs[regdx];
 			cpu->regs.byteregs[regal] = (uint8_t)port_read(cpu, cpu->oper1);
 			break;
 
-		case 0xED:	/* ED IN eAX regdx */
+		case 0xED:	/* IN AX, DX */
+			if (cpu->protected_mode) {
+				uint8_t cpl = cpu->segregs[regcs] & 3;
+				uint8_t iopl = (makeflagsword(cpu) >> 12) & 3;
+				if (cpl > iopl) {
+					cpu_intcall(cpu, 13);
+					break;
+				}
+			}
 			cpu->oper1 = cpu->regs.wordregs[regdx];
 			cpu->regs.wordregs[regax] = port_readw(cpu, cpu->oper1);
 			break;
 
-		case 0xEE:	/* EE OUT regdx cpu->regs.byteregs[regal] */
+		case 0xEE:	/* OUT DX, AL */
+			if (cpu->protected_mode) {
+				uint8_t cpl = cpu->segregs[regcs] & 3;
+				uint8_t iopl = (makeflagsword(cpu) >> 12) & 3;
+				if (cpl > iopl) {
+					cpu_intcall(cpu, 13);
+					break;
+				}
+			}
 			cpu->oper1 = cpu->regs.wordregs[regdx];
 			port_write(cpu, cpu->oper1, cpu->regs.byteregs[regal]);
 			break;
 
-		case 0xEF:	/* EF OUT regdx eAX */
+		case 0xEF:	/* OUT DX, AX */
+			if (cpu->protected_mode) {
+				uint8_t cpl = cpu->segregs[regcs] & 3;
+				uint8_t iopl = (makeflagsword(cpu) >> 12) & 3;
+				if (cpl > iopl) {
+					cpu_intcall(cpu, 13);
+					break;
+				}
+			}
 			cpu->oper1 = cpu->regs.wordregs[regdx];
 			port_writew(cpu, cpu->oper1, cpu->regs.wordregs[regax]);
 			break;
 
 		case 0xF4:	/* F4 HLT */
+			if (cpu->protected_mode) {
+				uint8_t cpl = cpu->segregs[regcs] & 3;
+				if (cpl != 0) {
+					cpu_intcall(cpu, 13);
+					break;
+				}
+			}
 			cpu->hltstate = 1;
 			break;
 
@@ -3996,10 +4191,26 @@ void cpu_exec(CPU_t* cpu, uint32_t execloops) {
 			break;
 
 		case 0xFA:	/* FA CLI */
+			if (cpu->protected_mode) {
+				uint8_t cpl = cpu->segregs[regcs] & 3;
+				uint8_t iopl = (makeflagsword(cpu) >> 12) & 3;
+				if (cpl > iopl) {
+					cpu_intcall(cpu, 13);
+					break;
+				}
+			}
 			cpu->ifl = 0;
 			break;
 
 		case 0xFB:	/* FB STI */
+			if (cpu->protected_mode) {
+				uint8_t cpl = cpu->segregs[regcs] & 3;
+				uint8_t iopl = (makeflagsword(cpu) >> 12) & 3;
+				if (cpl > iopl) {
+					cpu_intcall(cpu, 13);
+					break;
+				}
+			}
 			cpu->ifl = 1;
 			break;
 
