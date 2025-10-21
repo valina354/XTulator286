@@ -51,9 +51,13 @@ typedef struct {
 	} gdtr, idtr;
 	uint16_t ldtr, tr;
 	uint8_t protected_mode;
+	uint8_t cpl;
+	uint8_t iopl;
 	DESCRIPTOR_CACHE segcache[4];
 	DESCRIPTOR_CACHE ldtr_cache;
 	DESCRIPTOR_CACHE tr_cache;
+	uint8_t prefetch[6];
+	uint32_t prefetch_base;
 	uint8_t	tempcf, oldcf, cf, pf, af, zf, sf, tf, ifl, df, of, mode, reg, rm;
 	uint8_t nt;
 	uint16_t oper1, oper2, res16, disp16, temp16, dummy, stacksize, frametemp;

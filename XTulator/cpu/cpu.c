@@ -103,8 +103,7 @@ void load_ldtr(CPU_t* cpu, uint16_t selector) {
 		return;
 	}
 
-	uint16_t cpl = cpu->segregs[regcs] & 3;
-	if (cpl != 0) {
+	if (cpu->cpl != 0) {
 		debug_log(DEBUG_ERROR, "[CPU] LLDT: GPF(#13) - CPL != 0\n");
 		cpu_intcall(cpu, 13);
 		return;
@@ -140,7 +139,6 @@ void load_ldtr(CPU_t* cpu, uint16_t selector) {
 
 void load_descriptor(CPU_t* cpu, uint8_t seg_reg, uint16_t selector) {
 	DESCRIPTOR_CACHE* cache = &cpu->segcache[seg_reg];
-	uint16_t cpl = cpu->segregs[regcs] & 3;
 
 	if ((selector & 0xFFFC) == 0) {
 		if (seg_reg == regss) {
@@ -199,8 +197,8 @@ void load_descriptor(CPU_t* cpu, uint8_t seg_reg, uint16_t selector) {
 
 	if (seg_reg == regss) {
 		bool is_writable_data = !(access & 0x08) && (access & 0x02);
-		if (rpl != cpl || dpl != cpl || !is_writable_data) {
-			debug_log(DEBUG_ERROR, "[CPU] GPF(#13): Invalid SS selector %04X. CPL=%d, RPL=%d, DPL=%d, Access=0x%02X\n", selector, cpl, rpl, dpl, access);
+		if (rpl != cpu->cpl || dpl != cpu->cpl || !is_writable_data) {
+			debug_log(DEBUG_ERROR, "[CPU] GPF(#13): Invalid SS selector %04X. CPL=%d, RPL=%d, DPL=%d, Access=0x%02X\n", selector, cpu->cpl, rpl, dpl, access);
 			push(cpu, selector & 0xFFFC);
 			cpu_intcall(cpu, 13);
 			return;
@@ -213,7 +211,7 @@ void load_descriptor(CPU_t* cpu, uint8_t seg_reg, uint16_t selector) {
 			cpu_intcall(cpu, 13);
 			return;
 		}
-		if (dpl > cpl) {
+		if (dpl > cpu->cpl) {
 			debug_log(DEBUG_ERROR, "[CPU] GPF(#13): Cannot load CS with selector %04X due to privilege mismatch (DPL > CPL).\n", selector);
 			push(cpu, selector & 0xFFFC);
 			cpu_intcall(cpu, 13);
@@ -229,8 +227,8 @@ void load_descriptor(CPU_t* cpu, uint8_t seg_reg, uint16_t selector) {
 			cpu_intcall(cpu, 13);
 			return;
 		}
-		if ((cpl > dpl) || (rpl > dpl)) {
-			debug_log(DEBUG_ERROR, "[CPU] GPF(#13): Privilege violation loading DS/ES with selector %04X. CPL=%d, RPL=%d, DPL=%d\n", selector, cpl, rpl, dpl);
+		if ((cpu->cpl > dpl) || (rpl > dpl)) {
+			debug_log(DEBUG_ERROR, "[CPU] GPF(#13): Privilege violation loading DS/ES with selector %04X. CPL=%d, RPL=%d, DPL=%d\n", selector, cpu->cpl, rpl, dpl);
 			push(cpu, selector & 0xFFFC);
 			cpu_intcall(cpu, 13);
 			return;
@@ -795,6 +793,10 @@ void cpu_reset(CPU_t* cpu) {
 	cpu->protected_mode = 0;
 	a20_enabled = 0;
 	OpFinit(cpu);
+	for (i = 0; i < 6; i++) {
+		cpu->prefetch[i] = 0;
+	}
+	cpu->prefetch_base = 0;
 	cpu->segregs[regcs] = 0xF000;
 	cpu->ip = 0xFFF0;
 	cpu->hltstate = 0;
@@ -1476,13 +1478,11 @@ void cpu_intcall(CPU_t* cpu, uint8_t intnum) {
 		}
 
 		uint8_t target_dpl = (target_desc_access >> 5) & 3;
-		uint8_t cpl = cpu->segregs[regcs] & 3;
-
 		uint16_t old_flags = makeflagsword(cpu);
 		uint16_t old_cs = cpu->segregs[regcs];
 		uint16_t old_ip = cpu->ip;
 
-		if (target_dpl < cpl) {
+		if (target_dpl < cpu->cpl) {
 			if (!cpu->tr_cache.valid) {
 				debug_log(DEBUG_ERROR, "[CPU] GPF(#13): Invalid TSS during privilege change for INT %u.\n", intnum);
 				cpu_intcall(cpu, 8);
@@ -1514,7 +1514,9 @@ void cpu_intcall(CPU_t* cpu, uint8_t intnum) {
 		cpu->segregs[regcs] = new_cs;
 		cpu->ip = new_ip;
 
-		cpu->tf = 0;
+		if (cpu->opcode == 0xCC || cpu->opcode == 0xCD || cpu->opcode == 0xCE) {
+			cpu->tf = 0;
+		}
 		if (gate_type == 0x06) {
 			cpu->ifl = 0;
 		}
@@ -1525,7 +1527,9 @@ void cpu_intcall(CPU_t* cpu, uint8_t intnum) {
 	else {
 		uint16_t flags_to_push = makeflagsword(cpu);
 		cpu->ifl = 0;
-		cpu->tf = 0;
+		if (cpu->opcode == 0xCC || cpu->opcode == 0xCD || cpu->opcode == 0xCE) {
+			cpu->tf = 0;
+		}
 		push(cpu, flags_to_push);
 		push(cpu, cpu->segregs[regcs]);
 		push(cpu, cpu->ip);
@@ -1555,6 +1559,11 @@ void cpu_exec(CPU_t* cpu, uint32_t execloops) {
 
 	for (loopcount = 0; loopcount < execloops; loopcount++) {
 
+		if (cpu->protected_mode) {
+			cpu->cpl = cpu->segregs[regcs] & 3;
+			cpu->iopl = (makeflagsword(cpu) >> 12) & 3;
+		}
+
 		if (cpu->trap_toggle) {
 			cpu_intcall(cpu, 1);
 		}
@@ -1576,14 +1585,27 @@ void cpu_exec(CPU_t* cpu, uint32_t execloops) {
 		uint8_t prefix_count = 0;
 
 		while (!docontinue) {
-			cpu->segregs[regcs] = cpu->segregs[regcs] & 0xFFFF;
-			cpu->ip = cpu->ip & 0xFFFF;
+			cpu->segregs[regcs] &= 0xFFFF;
+			cpu->ip &= 0xFFFF;
 			cpu->savecs = cpu->segregs[regcs];
 			cpu->saveip = cpu->ip;
-			cpu->opcode = getmem8(cpu, cpu->segregs[regcs], cpu->ip);
+
+			uint32_t ea = segbase(cpu->savecs) + (uint32_t)cpu->saveip;
+
+			if ((ea < cpu->prefetch_base) || (ea > (cpu->prefetch_base + 5))) {
+				for (int i = 0; i < 6; i++) {
+					cpu->prefetch[i] = cpu_read(cpu, ea + i);
+				}
+				cpu->prefetch_base = ea;
+			}
+
+			cpu->opcode = cpu->prefetch[ea - cpu->prefetch_base];
+
 			StepIP(cpu, 1);
 
 			prefix_count++;
+
+			// 286 quirk documented at https://www.pcjs.org/documents/manuals/intel/80286/b2_b3_info/ 
 			if (prefix_count > 10) {
 				cpu_intcall(cpu, 13);
 				docontinue = 1;
@@ -1791,7 +1813,6 @@ void cpu_exec(CPU_t* cpu, uint32_t execloops) {
 						uint16_t limit;
 						uint8_t access;
 						uint16_t selector = readrm16(cpu, cpu->rm);
-						uint8_t cpl = cpu->segregs[regcs] & 3;
 						cpu->zf = 0;
 						if (selector != 0 && get_descriptor_info(cpu, selector, &base, &limit, &access)) {
 							bool is_system = (access & 0x10) == 0x00;
@@ -1801,7 +1822,7 @@ void cpu_exec(CPU_t* cpu, uint32_t execloops) {
 								bool writable = access & 0x02;
 								uint8_t seg_dpl = (access >> 5) & 3;
 								uint8_t rpl = selector & 3;
-								if ((seg_dpl >= cpl) && (seg_dpl >= rpl)) {
+								if ((seg_dpl >= cpu->cpl) && (seg_dpl >= rpl)) {
 									if (cpu->opcode == 0x04 && is_code && readable) cpu->zf = 1;
 									if (cpu->opcode == 0x05 && !is_code && writable) cpu->zf = 1;
 								}
@@ -1838,8 +1859,7 @@ void cpu_exec(CPU_t* cpu, uint32_t execloops) {
 					break;
 				case 2: // LGDT
 					if (cpu->protected_mode) {
-						uint8_t cpl = cpu->segregs[regcs] & 3;
-						if (cpl != 0) {
+						if (cpu->cpl != 0) {
 							debug_log(DEBUG_ERROR, "[CPU] GPF(#13): LGDT executed with CPL > 0\n");
 							cpu_intcall(cpu, 13);
 							break;
@@ -1855,8 +1875,7 @@ void cpu_exec(CPU_t* cpu, uint32_t execloops) {
 					break;
 				case 3: // LIDT
 					if (cpu->protected_mode) {
-						uint8_t cpl = cpu->segregs[regcs] & 3;
-						if (cpl != 0) {
+						if (cpu->cpl != 0) {
 							cpu_intcall(cpu, 13);
 							break;
 						}
@@ -1874,8 +1893,7 @@ void cpu_exec(CPU_t* cpu, uint32_t execloops) {
 					break;
 				case 6: // LMSW Ew
 					if (cpu->protected_mode) {
-						uint8_t cpl = cpu->segregs[regcs] & 3;
-						if (cpl != 0) {
+						if (cpu->cpl != 0) {
 							cpu_intcall(cpu, 13);
 							break;
 						}
@@ -1927,7 +1945,6 @@ void cpu_exec(CPU_t* cpu, uint32_t execloops) {
 				uint16_t limit;
 				uint8_t access;
 				uint16_t sel = readrm16(cpu, cpu->rm);
-				uint8_t cpl = cpu->segregs[regcs] & 3;
 				uint8_t rpl = sel & 3;
 
 				cpu->zf = 0;
@@ -1936,7 +1953,7 @@ void cpu_exec(CPU_t* cpu, uint32_t execloops) {
 					uint8_t type = (access >> 0) & 0x1F;
 					uint8_t dpl = (access >> 5) & 3;
 
-					if (dpl >= cpl && dpl >= rpl) {
+					if (dpl >= cpu->cpl && dpl >= rpl) {
 						bool valid_type = false;
 						if (cpu->opcode == 0x02) { // LAR
 							if (type != 0x00 && type != 0x08 && type != 0x0A && type != 0x0D) {
@@ -2028,8 +2045,7 @@ void cpu_exec(CPU_t* cpu, uint32_t execloops) {
 				break;
 			case 0x06: /* CLTS */
 				if (cpu->protected_mode) {
-					uint8_t cpl = cpu->segregs[regcs] & 3;
-					if (cpl != 0) {
+					if (cpu->cpl != 0) {
 						cpu_intcall(cpu, 13);
 						break;
 					}
@@ -2671,6 +2687,12 @@ void cpu_exec(CPU_t* cpu, uint32_t execloops) {
 				cpu->oper1 = readrm16(cpu, cpu->rm);
 				cpu->oper2 = getreg16(cpu, cpu->reg);
 
+				// 286 quirk documented at https://www.pcjs.org/documents/manuals/intel/80286/b2_b3_info/ 
+				if ((cpu->oper2 & 0xFFFC) == 0) {
+					cpu_intcall(cpu, 13);
+					break;
+				}
+
 				if ((cpu->oper1 & 3) < (cpu->oper2 & 3)) {
 					cpu->zf = 1;
 					cpu->oper1 = (cpu->oper1 & 0xFFFC) | (cpu->oper2 & 3);
@@ -2744,9 +2766,7 @@ void cpu_exec(CPU_t* cpu, uint32_t execloops) {
 
 		case 0x6C:	/* INSB */
 			if (cpu->protected_mode) {
-				uint8_t cpl = cpu->segregs[regcs] & 3;
-				uint8_t iopl = (makeflagsword(cpu) >> 12) & 3;
-				if (cpl > iopl) {
+				if (cpu->cpl > cpu->iopl) {
 					cpu_intcall(cpu, 13);
 					break;
 				}
@@ -2775,9 +2795,7 @@ void cpu_exec(CPU_t* cpu, uint32_t execloops) {
 
 		case 0x6D:	/* INSW */
 			if (cpu->protected_mode) {
-				uint8_t cpl = cpu->segregs[regcs] & 3;
-				uint8_t iopl = (makeflagsword(cpu) >> 12) & 3;
-				if (cpl > iopl) {
+				if (cpu->cpl > cpu->iopl) {
 					cpu_intcall(cpu, 13);
 					break;
 				}
@@ -2806,9 +2824,7 @@ void cpu_exec(CPU_t* cpu, uint32_t execloops) {
 
 		case 0x6E:	/* OUTSB */
 			if (cpu->protected_mode) {
-				uint8_t cpl = cpu->segregs[regcs] & 3;
-				uint8_t iopl = (makeflagsword(cpu) >> 12) & 3;
-				if (cpl > iopl) {
+				if (cpu->cpl > cpu->iopl) {
 					cpu_intcall(cpu, 13);
 					break;
 				}
@@ -2837,9 +2853,7 @@ void cpu_exec(CPU_t* cpu, uint32_t execloops) {
 
 		case 0x6F:	/* OUTSW */
 			if (cpu->protected_mode) {
-				uint8_t cpl = cpu->segregs[regcs] & 3;
-				uint8_t iopl = (makeflagsword(cpu) >> 12) & 3;
-				if (cpl > iopl) {
+				if (cpu->cpl > cpu->iopl) {
 					cpu_intcall(cpu, 13);
 					break;
 				}
@@ -3247,15 +3261,13 @@ void cpu_exec(CPU_t* cpu, uint32_t execloops) {
 		{
 			uint16_t new_flags = pop(cpu);
 			uint16_t old_flags = makeflagsword(cpu);
-			uint8_t cpl = cpu->segregs[regcs] & 3;
-			uint8_t iopl = (old_flags >> 12) & 3;
 
 			if (cpu->protected_mode) {
-				if (cpl > iopl) {
+				if (cpu->cpl > cpu->iopl) {
 					new_flags = (new_flags & ~0x0200) | (old_flags & 0x0200);
 				}
 
-				if (cpl != 0) {
+				if (cpu->cpl != 0) {
 					new_flags = (new_flags & ~0x3000) | (old_flags & 0x3000);
 				}
 
@@ -3778,12 +3790,11 @@ void cpu_exec(CPU_t* cpu, uint32_t execloops) {
 			if (cpu->opcode == 0xCA) StepIP(cpu, 2);
 
 			if (cpu->protected_mode) {
-				uint8_t cpl = cpu->segregs[regcs] & 3;
 				uint16_t temp_ip = pop(cpu);
 				uint16_t temp_cs = pop(cpu);
 				uint8_t rpl = temp_cs & 3;
 
-				if (rpl > cpl) {
+				if (rpl > cpu->cpl) {
 					uint16_t temp_sp = pop(cpu);
 					uint16_t temp_ss = pop(cpu);
 					load_descriptor(cpu, regss, temp_ss);
@@ -3839,20 +3850,19 @@ void cpu_exec(CPU_t* cpu, uint32_t execloops) {
 					break;
 				}
 
-				uint8_t cpl = cpu->segregs[regcs] & 3;
 				uint16_t temp_ip = pop(cpu);
 				uint16_t temp_cs = pop(cpu);
 				uint16_t temp_flags = pop(cpu);
 				uint8_t rpl = temp_cs & 3;
 
-				if (rpl < cpl) {
+				if (rpl < cpu->cpl) {
 					cpu->regs.wordregs[regsp] += 6;
 					push(cpu, temp_cs & 0xFFFC);
 					cpu_intcall(cpu, 13);
 					break;
 				}
 
-				if (rpl > cpl) {
+				if (rpl > cpu->cpl) {
 					uint16_t temp_sp = pop(cpu);
 					uint16_t temp_ss = pop(cpu);
 
@@ -4008,9 +4018,7 @@ void cpu_exec(CPU_t* cpu, uint32_t execloops) {
 
 		case 0xE4:	/* IN AL, Ib */
 			if (cpu->protected_mode) {
-				uint8_t cpl = cpu->segregs[regcs] & 3;
-				uint8_t iopl = (makeflagsword(cpu) >> 12) & 3;
-				if (cpl > iopl) {
+				if (cpu->cpl > cpu->iopl) {
 					cpu_intcall(cpu, 13);
 					break;
 				}
@@ -4022,9 +4030,7 @@ void cpu_exec(CPU_t* cpu, uint32_t execloops) {
 
 		case 0xE5:	/* IN AX, Ib */
 			if (cpu->protected_mode) {
-				uint8_t cpl = cpu->segregs[regcs] & 3;
-				uint8_t iopl = (makeflagsword(cpu) >> 12) & 3;
-				if (cpl > iopl) {
+				if (cpu->cpl > cpu->iopl) {
 					cpu_intcall(cpu, 13);
 					break;
 				}
@@ -4036,9 +4042,7 @@ void cpu_exec(CPU_t* cpu, uint32_t execloops) {
 
 		case 0xE6:	/* OUT Ib, AL */
 			if (cpu->protected_mode) {
-				uint8_t cpl = cpu->segregs[regcs] & 3;
-				uint8_t iopl = (makeflagsword(cpu) >> 12) & 3;
-				if (cpl > iopl) {
+				if (cpu->cpl > cpu->iopl) {
 					cpu_intcall(cpu, 13);
 					break;
 				}
@@ -4050,9 +4054,7 @@ void cpu_exec(CPU_t* cpu, uint32_t execloops) {
 
 		case 0xE7:	/* OUT Ib, AX */
 			if (cpu->protected_mode) {
-				uint8_t cpl = cpu->segregs[regcs] & 3;
-				uint8_t iopl = (makeflagsword(cpu) >> 12) & 3;
-				if (cpl > iopl) {
+				if (cpu->cpl > cpu->iopl) {
 					cpu_intcall(cpu, 13);
 					break;
 				}
@@ -4094,9 +4096,7 @@ void cpu_exec(CPU_t* cpu, uint32_t execloops) {
 
 		case 0xEC:	/* IN AL, DX */
 			if (cpu->protected_mode) {
-				uint8_t cpl = cpu->segregs[regcs] & 3;
-				uint8_t iopl = (makeflagsword(cpu) >> 12) & 3;
-				if (cpl > iopl) {
+				if (cpu->cpl > cpu->iopl) {
 					cpu_intcall(cpu, 13);
 					break;
 				}
@@ -4107,9 +4107,7 @@ void cpu_exec(CPU_t* cpu, uint32_t execloops) {
 
 		case 0xED:	/* IN AX, DX */
 			if (cpu->protected_mode) {
-				uint8_t cpl = cpu->segregs[regcs] & 3;
-				uint8_t iopl = (makeflagsword(cpu) >> 12) & 3;
-				if (cpl > iopl) {
+				if (cpu->cpl > cpu->iopl) {
 					cpu_intcall(cpu, 13);
 					break;
 				}
@@ -4120,9 +4118,7 @@ void cpu_exec(CPU_t* cpu, uint32_t execloops) {
 
 		case 0xEE:	/* OUT DX, AL */
 			if (cpu->protected_mode) {
-				uint8_t cpl = cpu->segregs[regcs] & 3;
-				uint8_t iopl = (makeflagsword(cpu) >> 12) & 3;
-				if (cpl > iopl) {
+				if (cpu->cpl > cpu->iopl) {
 					cpu_intcall(cpu, 13);
 					break;
 				}
@@ -4133,9 +4129,7 @@ void cpu_exec(CPU_t* cpu, uint32_t execloops) {
 
 		case 0xEF:	/* OUT DX, AX */
 			if (cpu->protected_mode) {
-				uint8_t cpl = cpu->segregs[regcs] & 3;
-				uint8_t iopl = (makeflagsword(cpu) >> 12) & 3;
-				if (cpl > iopl) {
+				if (cpu->cpl > cpu->iopl) {
 					cpu_intcall(cpu, 13);
 					break;
 				}
@@ -4146,8 +4140,7 @@ void cpu_exec(CPU_t* cpu, uint32_t execloops) {
 
 		case 0xF4:	/* F4 HLT */
 			if (cpu->protected_mode) {
-				uint8_t cpl = cpu->segregs[regcs] & 3;
-				if (cpl != 0) {
+				if (cpu->cpl != 0) {
 					cpu_intcall(cpu, 13);
 					break;
 				}
@@ -4192,9 +4185,7 @@ void cpu_exec(CPU_t* cpu, uint32_t execloops) {
 
 		case 0xFA:	/* FA CLI */
 			if (cpu->protected_mode) {
-				uint8_t cpl = cpu->segregs[regcs] & 3;
-				uint8_t iopl = (makeflagsword(cpu) >> 12) & 3;
-				if (cpl > iopl) {
+				if (cpu->cpl > cpu->iopl) {
 					cpu_intcall(cpu, 13);
 					break;
 				}
@@ -4204,9 +4195,7 @@ void cpu_exec(CPU_t* cpu, uint32_t execloops) {
 
 		case 0xFB:	/* FB STI */
 			if (cpu->protected_mode) {
-				uint8_t cpl = cpu->segregs[regcs] & 3;
-				uint8_t iopl = (makeflagsword(cpu) >> 12) & 3;
-				if (cpl > iopl) {
+				if (cpu->cpl > cpu->iopl) {
 					cpu_intcall(cpu, 13);
 					break;
 				}
