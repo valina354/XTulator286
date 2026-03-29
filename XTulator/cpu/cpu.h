@@ -22,7 +22,6 @@
 
 #include <stdint.h>
 #include <stdbool.h>
-#include "fpu.h"
 #include "../chipset/i8259.h"
 
 union _bytewordregs_ {
@@ -34,7 +33,6 @@ typedef struct {
 	uint32_t base;
 	uint16_t limit;
 	uint8_t access;
-	uint8_t expand_down;
 	uint8_t valid;
 	uint16_t ss0;
 	uint16_t sp0;
@@ -51,22 +49,17 @@ typedef struct {
 	} gdtr, idtr;
 	uint16_t ldtr, tr;
 	uint8_t protected_mode;
-	uint8_t cpl;
-	uint8_t iopl;
 	DESCRIPTOR_CACHE segcache[4];
 	DESCRIPTOR_CACHE ldtr_cache;
 	DESCRIPTOR_CACHE tr_cache;
-	uint8_t prefetch[6];
-	uint32_t prefetch_base;
+	uint8_t cpl, iopl;
 	uint8_t	tempcf, oldcf, cf, pf, af, zf, sf, tf, ifl, df, of, mode, reg, rm;
-	uint8_t nt;
 	uint16_t oper1, oper2, res16, disp16, temp16, dummy, stacksize, frametemp;
 	uint8_t	oper1b, oper2b, res8, disp8, temp8, nestlev, addrbyte;
 	uint32_t temp1, temp2, temp3, temp4, temp5, temp32, tempaddr32, ea;
 	int32_t	result;
 	uint16_t trap_toggle;
 	uint64_t totalexec;
-	FPU_t fpu;
 	void (*int_callback[256])(void*, uint8_t); //Want to pass a CPU object in first param, but it's not defined at this point so use a void*
 	uint8_t handling_fault;
 } CPU_t;
@@ -123,7 +116,6 @@ typedef struct {
 	( \
 	2 | (uint16_t) x->cf | ((uint16_t) x->pf << 2) | ((uint16_t) x->af << 4) | ((uint16_t) x->zf << 6) | ((uint16_t) x->sf << 7) | \
 	((uint16_t) x->tf << 8) | ((uint16_t) x->ifl << 9) | ((uint16_t) x->df << 10) | ((uint16_t) x->of << 11) \
-	| ((uint16_t) x->nt << 14) \
 	)
 
 #define decodeflagsword(x,y) { \
@@ -138,7 +130,7 @@ typedef struct {
 	x->ifl = (tmp >> 9) & 1; \
 	x->df = (tmp >> 10) & 1; \
 	x->of = (tmp >> 11) & 1; \
-	x->nt = (tmp >> 14) & 1; \
+	x->iopl = (tmp >> 12) & 3; \
 }
 
 #define modregrm(x) { \

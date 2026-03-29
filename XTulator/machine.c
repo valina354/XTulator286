@@ -82,9 +82,10 @@ const MACHINEMEM_t machine_mem[][10] = {
 	//Generic XT clone
 	{
 		{ MACHINE_MEM_RAM, 0x00000, 0xA0000, MACHINE_ROM_ISNOTROM, NULL },
-		{ MACHINE_MEM_RAM, 0x100000, 0xF00000, MACHINE_ROM_ISNOTROM, NULL },
-		{ MACHINE_MEM_ROM, 0xFC000, 0x4000, MACHINE_ROM_REQUIRED, "roms/machine/generic_xt/bios_expanded_16kb.bin" },
-		{ MACHINE_MEM_ROM, 0xFFC000, 0x4000, MACHINE_ROM_REQUIRED, "roms/machine/generic_xt/bios_expanded_16kb.bin" },
+#ifndef USE_DISK_HLE
+		{ MACHINE_MEM_ROM, 0xD0000, 0x02000, MACHINE_ROM_REQUIRED, "roms/disk/ide_xt.bin" },
+#endif
+		{ MACHINE_MEM_ROM, 0xFE000, 0x02000, MACHINE_ROM_REQUIRED, "roms/machine/generic_xt/pcxtbios.bin" },
 		{ MACHINE_MEM_ENDLIST, 0, 0, 0, NULL }
 	},
 

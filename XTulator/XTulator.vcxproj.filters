@@ -159,9 +159,6 @@
     <ClCompile Include="chipset\i8042.c">
       <Filter>Source Files\chipset</Filter>
     </ClCompile>
-    <ClCompile Include="cpu\fpu.c">
-      <Filter>Source Files\cpu</Filter>
-    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="cpu\cpu.h">
@@ -268,9 +265,6 @@
     </ClInclude>
     <ClInclude Include="chipset\i8042.h">
       <Filter>Header Files\chipset</Filter>
-    </ClInclude>
-    <ClInclude Include="cpu\fpu.h">
-      <Filter>Header Files\cpu</Filter>
     </ClInclude>
   </ItemGroup>
 </Project>
